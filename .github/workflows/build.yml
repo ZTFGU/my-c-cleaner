@@ -1,0 +1,16 @@
+name: Build EXE
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup update stable
+      - name: Build Release
+        run: cargo build --release
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: C-Disk-Cleaner
+          path: target/release/c_disk_cleaner.exe
