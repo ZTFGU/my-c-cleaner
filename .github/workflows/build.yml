@@ -26,7 +26,7 @@ jobs:
           serde = { version = "1.0", features = ["derive"] }
           serde_json = "1.0"
           # 使用 webview2024 库让后台与前端网页可以互相发送数据
-          inline-assets = "0.2"
+          inline_assets = "0.2"
           "@
 
       - name: 3. 生成全中文高颜值前端界面 (ui/index.html)
