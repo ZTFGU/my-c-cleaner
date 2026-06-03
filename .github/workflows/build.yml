@@ -3,14 +3,172 @@ on: [push, workflow_dispatch]
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true  # 解决 2026 年 Node.js 24 版本的兼容性警告
     steps:
-      - uses: actions/checkout@v4
+      - name: Create Project Folder
+        run: |
+          if (Test-Path "my_cleaner") { Remove-Item -Recurse -Force "my_cleaner" }
+          mkdir my_cleaner
+        
+      - name: Create Cargo.toml
+        run: |
+          Set-Content -Path "my_cleaner\Cargo.toml" -Value @"
+          [package]
+          name = "c_disk_cleaner"
+          version = "0.1.0"
+          edition = "2021"
+
+          [dependencies]
+          sysinfo = "0.30"
+          walkdir = "2.4"
+          serde = { version = "1.0", features = ["derive"] }
+          serde_json = "1.0"
+          indicatif = "0.17"
+          "@
+
+      - name: Create src folder
+        run: mkdir my_cleaner\src
+
+      - name: Create main.rs
+        run: |
+          Set-Content -Path "my_cleaner\src\main.rs" -Value @"
+          use std::env;
+          use std::path::{Path};
+          use std::fs;
+          use walkdir::WalkDir;
+          use serde::{Serialize, Deserialize};
+          use indicatif::{ProgressBar, ProgressStyle};
+
+          #[derive(Serialize, Deserialize, Debug, Clone)]
+          struct TargetCategory {
+              name: String,
+              description: String,
+              paths: Vec<String>,
+              risk_level: String,
+          }
+
+          #[derive(Serialize, Deserialize, Debug)]
+          struct ScanResult {
+              category_name: String,
+              risk_level: String,
+              total_bytes: u64,
+              files_found: Vec<String>,
+          }
+
+          #[derive(Serialize, Deserialize, Debug)]
+          struct FullReport {
+              total_scanned_bytes: u64,
+              total_reclaimable_bytes: u64,
+              categories: Vec<ScanResult>,
+          }
+
+          fn initialize_rules() -> Vec<TargetCategory> {
+              let mut categories = Vec::new();
+              let mut system_temp_paths = vec!["C:\\Windows\\Temp".to_string()];
+              if let Ok(temp) = env::var("TEMP") {
+                  system_temp_paths.push(temp);
+              }
+              categories.push(TargetCategory {
+                  name: "系统及用户临时文件 (System Temp)".to_string(),
+                  description: "系统和软件运行产生的临时缓存。".to_string(),
+                  paths: system_temp_paths,
+                  risk_level: "Low".to_string(),
+              });
+
+              let mut dev_paths = Vec::new();
+              if let Ok(user_profile) = env::var("USERPROFILE") {
+                  dev_paths.push(format!("{}\\\.m2\\repository", user_profile));
+                  dev_paths.push(format!("{}\\\.gradle\\caches", user_profile));
+                  dev_paths.push(format!("{}\\AppData\\Local\\pip\\cache", user_profile));
+                  dev_paths.push(format!("{}\\AppData\\Local\\npm-cache", user_profile));
+              }
+              categories.push(TargetCategory {
+                  name: "编程开发人员缓存 (Developer Caches)".to_string(),
+                  description: "各种包管理器的本地缓存。".to_string(),
+                  paths: dev_paths,
+                  risk_level: "Medium".to_string(),
+              });
+
+              categories
+          }
+
+          fn scan_category(category: &TargetCategory) -> ScanResult {
+              let mut total_bytes = 0;
+              let mut files_found = Vec::new();
+              for path_str in &category.paths {
+                  let path = Path::new(path_str);
+                  if !path.exists() { continue; }
+                  for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
+                      if entry.file_type().is_file() {
+                          if let Ok(metadata) = entry.metadata() {
+                              total_bytes += metadata.len();
+                              files_found.push(entry.path().display().to_string());
+                          }
+                      }
+                  }
+              }
+              ScanResult {
+                  category_name: category.name.clone(),
+                  risk_level: category.risk_level.clone(),
+                  total_bytes,
+                  files_found,
+              }
+          }
+
+          fn main() {
+              println!("====================================================");
+              println!("     C 盘智能空间清理与深度分析引擎 (全自动安全版)     ");
+              println!("====================================================\n");
+              let rules = initialize_rules();
+              let mut reports = Vec::new();
+              let mut total_reclaimable: u64 = 0;
+              let pb = ProgressBar::new(rules.len() as u64);
+              pb.set_style(ProgressStyle::default_bar()
+                  .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} 正在扫描: {msg}")
+                  .unwrap()
+                  .progress_chars("#>-"));
+              for cat in &rules {
+                  pb.set_message(cat.name.clone());
+                  let result = scan_category(cat);
+                  total_reclaimable += result.total_bytes;
+                  reports.push(result);
+                  pb.inc(1);
+              }
+              pb.finish_with_message("扫描完成！");
+              let full_report = FullReport {
+                  total_scanned_bytes: total_reclaimable,
+                  total_reclaimable_bytes: total_reclaimable,
+                  categories: reports,
+              };
+              println!("\n+----------------------------------------------------+");
+              println!("|                   C 盘深度扫描报告                 |");
+              println!("+----------------------------------------------------+");
+              println!(" 预计总共可释放空间: {:.2} MB", (full_report.total_reclaimable_bytes as f64) / 1024.0 / 1024.0);
+              println!("----------------------------------------------------");
+              for cat_res in &full_report.categories {
+                  println!(" [{}] {} \n      => 可释放: {:.2} KB (共发现 {} 个文件)", 
+                      cat_res.risk_level, cat_res.category_name, (cat_res.total_bytes as f64) / 1024.0, cat_res.files_found.len());
+              }
+              println!("+----------------------------------------------------+");
+              if let Ok(json_report) = serde_json::to_string_pretty(&full_report) {
+                  let out_path = "scan_report.json";
+                  fs::write(out_path, json_report).unwrap();
+                  println!("\n[可视化支持] 报告已导出至 '{}'。", out_path);
+              }
+          }
+          "@
+
       - name: Install Rust
         run: rustup update stable
+
       - name: Build Release
-        run: cargo build --release
+        run: |
+          cd my_cleaner
+          cargo build --release
+
       - name: Upload EXE
         uses: actions/upload-artifact@v4
         with:
           name: C-Disk-Cleaner
-          path: target/release/c_disk_cleaner.exe
+          path: my_cleaner/target/release/c_disk_cleaner.exe
